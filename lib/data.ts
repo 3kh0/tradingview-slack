@@ -31,7 +31,7 @@ export function pull(sym: string, interval = "5", count = 288): Promise<ChartDat
     const t = setTimeout(() => { ws.close(); reject(new Error("Timeout")); }, 15000);
 
     ws.on("open", () => {
-      ws.send(fmt("set_auth_token", ["bullshit"])); // if valid, this would give us nyse/nasdaq data instead of cboe, but i dont got that type of money
+      ws.send(fmt("set_auth_token", ["unauthorized_user_token"]));
       ws.send(fmt("chart_create_session", [cs, ""]));
       ws.send(fmt("quote_create_session", [qs]));
       ws.send(fmt("quote_set_fields", [qs, "ch", "chp", "current_session", "description", "local_description", "exchange", "format", "fractional", "is_tradable", "language", "logoid", "logo", "lp", "lp_time", "minmov", "minmove2", "original_name", "pricescale", "pro_name", "short_name", "type", "update_mode", "volume", "currency_code", "rchp", "rtc"]));
