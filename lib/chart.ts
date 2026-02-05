@@ -18,8 +18,8 @@ export function buildChart(data: ChartData): string {
   const { line, area, yMin, yMax } = svgPath(data, cW, cH), range = yMax - yMin;
 
   const logo = data.symbolInfo.logoid ? `https://s3-symbol-logo.tradingview.com/${data.symbolInfo.logoid}--600.png` : null;
-  const ex = data.symbol.split(":")[0]?.toLowerCase(), prov = data.symbolInfo.providerId?.toLowerCase();
-  const exUrls = [ex && `https://s3-symbol-logo.tradingview.com/${ex}--600.png`, ex && `https://s3-symbol-logo.tradingview.com/provider/${ex}.svg`, prov && `https://s3-symbol-logo.tradingview.com/provider/${prov}.svg`].filter(Boolean);
+  const ex = data.symbol.split(":")[0], prov = data.symbolInfo.providerId?.toLowerCase();
+  const exUrls = [ex && `https://s3-symbol-logo.tradingview.com/source/${ex}.svg`, prov && `https://s3-symbol-logo.tradingview.com/provider/${prov}.svg`].filter(Boolean);
 
   const pDec = data.currentPrice < 10 ? 5 : data.currentPrice < 100 ? 3 : 2;
   const sign = up ? "+" : "", cDec = Math.abs(data.change) < 1 ? 5 : Math.abs(data.change) < 10 ? 3 : 2;
