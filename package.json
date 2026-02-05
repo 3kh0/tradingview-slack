@@ -1,0 +1,12 @@
+{
+  "name": "tradingview-slack",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "test:charts": "bun run test-charts.ts"
+  },
+  "dependencies": {
+    "playwright-core": "^1.58.1",
+    "ws": "^8.19.0"
+  }
+}
