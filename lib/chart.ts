@@ -25,14 +25,16 @@ export function buildChart(d: ChartData): string {
   const sign = up ? "+" : "", cDec = Math.abs(d.change) < 1 ? 5 : Math.abs(d.change) < 10 ? 3 : 2;
   const yTicks = [...Array(6)].map((_, i) => { const p = yMin + (r * i) / 5; return { p, d: p < 10 ? 4 : p < 100 ? 2 : p < 1000 ? 1 : 0 }; }).reverse();
 
-  const isStock = d.symbolInfo.type === "stock" || d.sessionInfo?.marketPhase === "regular" || d.sessionInfo?.marketPhase === "extended";
-  const xTicks = isStock && d.bars.length > 0
-    ? (() => {
-        const s = new Date(d.bars[0].time); s.setHours(9, 30, 0, 0);
-        const span = new Date(d.bars.at(-1)!.time).getTime() - s.getTime();
-        return [...Array(7)].map((_, i) => { const t = new Date(s.getTime() + (span * i) / 6); t.setMinutes(Math.round(t.getMinutes() / 30) * 30); return fmt(t, "America/New_York"); });
-      })()
-    : [...Array(7)].map((_, i) => { const b = d.bars[Math.floor((i / 6) * (d.bars.length - 1))]; return b ? fmt(new Date(b.time)) : ""; });
+  const xTicks = (() => {
+    if (!d.bars.length) return [];
+    const isStock = d.symbolInfo.type === "stock" || d.sessionInfo?.marketPhase === "regular" || d.sessionInfo?.marketPhase === "extended";
+    const tz = isStock ? "America/New_York" : undefined;
+    const start = d.bars[0].time, end = d.bars.at(-1)!.time;
+    const startSnap = Math.ceil(start / (30 * 60 * 1000)) * (30 * 60 * 1000);
+    const ticks: string[] = [];
+    for (let t = startSnap; t <= end; t += 30 * 60 * 1000) ticks.push(fmt(new Date(t), tz));
+    return ticks;
+  })();
 
   const lastY = d.bars.at(-1) ? ((yMax - d.bars.at(-1)!.close) / r) * 100 : 50;
   const priceY = ((yMax - d.currentPrice) / r) * 100;
