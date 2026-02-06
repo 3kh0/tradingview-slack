@@ -49,7 +49,7 @@ function parse(d: string): any[] {
 
 async function lookup(query: string) {
   const { symbol, description } = await search(query);
-  const d = await pull(symbol, "5", 288);
+  const d = await pull(symbol, "1");
   await mkdir(OUT, { recursive: true });
   const name = symbol.replace(":", "_");
   await writeFile(`${OUT}/${name}.png`, await render(d));
@@ -62,10 +62,10 @@ async function main() {
   for (const { tv, name } of symbols) {
     console.log(`\n📊 ${name} (${tv})`);
     try {
-      const d = await pull(tv, "5", 288);
+      const d = await pull(tv, "1");
       console.log(`   ${d.symbolInfo.description || d.symbolInfo.name}`);
       console.log(`   p: ${d.currentPrice} | c: ${d.change.toFixed(3)} (${d.changePercent.toFixed(2)}%)`);
-      console.log(`   b: ${d.bars.length} | l: ${d.symbolInfo.logoid || "none"}`);
+      console.log(`   b: ${d.bars.length} | session: ${d.sessionInfo?.label || "24 hours"} | l: ${d.symbolInfo.logoid || "none"}`);
       await writeFile(`${OUT}/${name}.png`, await render(d));
     } catch (e: any) { console.error(`fail ${e.message}`); }
   }
