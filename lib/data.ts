@@ -93,6 +93,10 @@ function determineMarketPhase(sessionStr: string, currentSession: string, symbol
   let totalHours = endH - startH;
   if (totalHours <= 0) totalHours += 24;
 
+  if (totalHours >= 23) {
+    return { hours: totalHours, label: "past day", marketPhase: "crypto" };
+  }
+
   switch (currentSession) {
     case "market":
       return {
