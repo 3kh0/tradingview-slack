@@ -1,19 +1,13 @@
-import { chromium, Browser } from "playwright-core";
+import { Resvg } from "@resvg/resvg-js";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 import type { ChartData } from "./data";
 import { buildChart } from "./chart";
 
-let browser: Browser | null = null;
+const fontsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "fonts");
 
-export async function render(data: ChartData): Promise<Buffer> {
-  browser ??= await chromium.launch({ channel: "chrome" });
-  const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
-  await page.setContent(buildChart(data), { waitUntil: "networkidle" });
-  await page.waitForTimeout(500);
-  const buf = await page.screenshot({ type: "png" });
-  await page.close();
-  return Buffer.from(buf);
-}
-
-export async function close() {
-  if (browser) { await browser.close(); browser = null; }
+export async function render(d: ChartData): Promise<Buffer> {
+  return Buffer.from(new Resvg(await buildChart(d), {
+    font: { fontDirs: [fontsDir], defaultFontFamily: "Inter" },
+  }).render().asPng());
 }

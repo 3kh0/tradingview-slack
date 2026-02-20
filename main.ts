@@ -1,5 +1,5 @@
 import { writeFile, mkdir } from "fs/promises";
-import { pull, render, close } from "./lib";
+import { pull, render } from "./lib";
 import WebSocket from "ws";
 
 const OUT = "./charts";
@@ -54,7 +54,6 @@ async function lookup(query: string) {
   const name = symbol.replace(":", "_");
   await writeFile(`${OUT}/${name}.png`, await render(d));
   console.log(`saved to ${OUT}/${name}.png`);
-  await close();
 }
 
 async function main() {
@@ -69,7 +68,6 @@ async function main() {
       await writeFile(`${OUT}/${name}.png`, await render(d));
     } catch (e: any) { console.error(`fail ${e.message}`); }
   }
-  await close();
 }
 
 const arg = process.argv[2];

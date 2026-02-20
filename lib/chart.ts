@@ -2,71 +2,97 @@ import type { ChartData } from "./data";
 
 const num = (v: number, d: number) => v.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
 const fmt = (t: Date, tz?: string) => t.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, ...(tz && { timeZone: tz }) });
+const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-function svgPath(data: ChartData, w: number, h: number) {
-  const c = data.bars.map(b => b.close).filter(p => p > 0);
+async function fetchB64(url: string): Promise<string | null> {
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    const b = Buffer.from(await r.arrayBuffer());
+    return `data:${r.headers.get("content-type") || "image/png"};base64,${b.toString("base64")}`;
+  } catch { return null; }
+}
+
+function svgPath(bars: ChartData["bars"], w: number, h: number) {
+  const c = bars.map(b => b.close).filter(p => p > 0);
   if (!c.length) return { line: "", area: "", yMin: 0, yMax: 0 };
   const min = Math.min(...c), max = Math.max(...c), pad = (max - min || 1) * 0.1;
   const yMin = min - pad, yMax = max + pad, r = yMax - yMin;
-  const pts = data.bars.map((b, i) => `${(i / (data.bars.length - 1 || 1)) * w},${h - ((b.close - yMin) / r) * h}`);
+  const pts = bars.map((b, i) => `${(i / (bars.length - 1 || 1)) * w},${h - ((b.close - yMin) / r) * h}`);
   return { line: `M ${pts.join(" L ")}`, area: `M ${pts.join(" L ")} L ${w},${h} L 0,${h} Z`, yMin, yMax };
 }
 
-export function buildChart(d: ChartData): string {
-  const W = 1920, H = 1080, cW = 1680, cH = 680;
-  const up = d.change >= 0, col = up ? "#22ab94" : "#f7525f", fill = up ? "rgba(34,171,148,0.3)" : "rgba(247,82,95,0.3)";
-  const { line, area, yMin, yMax } = svgPath(d, cW, cH), r = yMax - yMin;
-
-  const logo = d.symbolInfo.logoid ? `https://s3-symbol-logo.tradingview.com/${d.symbolInfo.logoid}--600.png` : null;
+async function fetchExIcon(d: ChartData): Promise<string | null> {
   const ex = d.symbol.split(":")[0], prov = d.symbolInfo.providerId?.toLowerCase();
-  const exUrls = [ex && `https://s3-symbol-logo.tradingview.com/source/${ex}.svg`, prov && `https://s3-symbol-logo.tradingview.com/provider/${prov}.svg`].filter(Boolean);
+  const urls = [ex && `https://s3-symbol-logo.tradingview.com/source/${ex}.svg`, prov && `https://s3-symbol-logo.tradingview.com/provider/${prov}.svg`].filter(Boolean) as string[];
+  for (const u of urls) {
+    const b = await fetchB64(u);
+    if (b) return b;
+  }
+  return null;
+}
 
-  const pDec = d.currentPrice < 10 ? 5 : d.currentPrice < 100 ? 3 : 2;
-  const sign = up ? "+" : "", cDec = Math.abs(d.change) < 1 ? 5 : Math.abs(d.change) < 10 ? 3 : 2;
-  const yTicks = [...Array(6)].map((_, i) => { const p = yMin + (r * i) / 5; return { p, d: p < 10 ? 4 : p < 100 ? 2 : p < 1000 ? 1 : 0 }; }).reverse();
+export async function buildChart(d: ChartData): Promise<string> {
+  const W = 1920, H = 1080, PX = 60, PY = 40, cW = 1660, cH = 680, cY = 300;
+  const up = d.change >= 0, col = up ? "#22ab94" : "#f7525f";
+  const { line, area, yMin, yMax } = svgPath(d.bars, cW, cH), r = yMax - yMin;
 
-  const xTicks = (() => {
+  const logoUrl = d.symbolInfo.logoid && `https://s3-symbol-logo.tradingview.com/${d.symbolInfo.logoid}--600.png`;
+  const [logo, exIcon] = await Promise.all([logoUrl ? fetchB64(logoUrl) : null, fetchExIcon(d)]);
+
+  const pD = d.currentPrice < 10 ? 5 : d.currentPrice < 100 ? 3 : 2;
+  const sgn = up ? "+" : "", cD = Math.abs(d.change) < 1 ? 5 : Math.abs(d.change) < 10 ? 3 : 2;
+
+  const yT = [...Array(6)].map((_, i) => { const p = yMin + (r * i) / 5; return { p, d: p < 10 ? 4 : p < 100 ? 2 : p < 1000 ? 1 : 0 }; }).reverse();
+
+  const xT = (() => {
     if (!d.bars.length) return [];
-    const isStock = d.symbolInfo.type === "stock" || d.sessionInfo?.marketPhase === "regular" || d.sessionInfo?.marketPhase === "extended";
-    const tz = isStock ? "America/New_York" : undefined;
-    if (isStock && d.sessionInfo?.marketPhase === "regular") {
-      const ticks: string[] = [];
-      const s = new Date(d.bars[0].time); s.setHours(9, 30, 0, 0);
-      for (let t = s.getTime(); t <= d.bars.at(-1)!.time; t += 30 * 60 * 1000) ticks.push(fmt(new Date(t), "America/New_York"));
-      return ticks;
+    const stock = d.symbolInfo.type === "stock" || d.sessionInfo?.marketPhase === "regular" || d.sessionInfo?.marketPhase === "extended";
+    const tz = stock ? "America/New_York" : undefined;
+    if (stock && d.sessionInfo?.marketPhase === "regular") {
+      const t: string[] = [], s = new Date(d.bars[0].time);
+      s.setHours(9, 30, 0, 0);
+      for (let ms = s.getTime(); ms <= d.bars.at(-1)!.time; ms += 1.8e6) t.push(fmt(new Date(ms), "America/New_York"));
+      return t;
     }
     const start = d.bars[0].time, end = d.bars.at(-1)!.time;
-    const spanH = (end - start) / (60 * 60 * 1000);
-    const stepH = spanH > 12 ? 2 : 1;
-    const stepMs = stepH * 60 * 60 * 1000;
-    const startSnap = Math.ceil(start / stepMs) * stepMs;
-    const ticks: string[] = [];
-    for (let t = startSnap; t <= end; t += stepMs) ticks.push(fmt(new Date(t), tz));
-    return ticks;
+    const step = ((end - start) / 3.6e6 > 12 ? 2 : 1) * 3.6e6;
+    const t: string[] = [];
+    for (let ms = Math.ceil(start / step) * step; ms <= end; ms += step) t.push(fmt(new Date(ms), tz));
+    return t;
   })();
 
-  const lastY = d.bars.at(-1) ? ((yMax - d.bars.at(-1)!.close) / r) * 100 : 50;
-  const priceY = ((yMax - d.currentPrice) / r) * 100;
-  const sess = d.sessionInfo?.label || "24 hours";
+  const lastY = r > 0 && d.bars.at(-1) ? ((yMax - d.bars.at(-1)!.close) / r) * cH : cH / 2;
+  const plY = r > 0 ? ((yMax - d.currentPrice) / r) * cH : cH / 2;
 
-  return `<!DOCTYPE html><html><head><style>
-*{margin:0;padding:0;box-sizing:border-box}html{font-size:20px}
-body{width:${W}px;height:${H}px;background:#000;font-family:-apple-system,BlinkMacSystemFont,"Trebuchet MS",Roboto,Ubuntu,sans-serif;color:#fff;overflow:hidden}
-.c{display:flex;flex-direction:column;height:100%;padding:2rem 3rem}
-.h{margin-bottom:1.5rem}.sr{display:flex;align-items:center;gap:1rem;margin-bottom:.5rem}
-.l{width:4rem;height:4rem;border-radius:50%;background:${col};display:flex;align-items:center;justify-content:center;font-size:2rem;font-weight:700;flex-shrink:0;overflow:hidden}
-.l img{width:100%;height:100%;object-fit:cover}.si{display:flex;flex-direction:column}
-.sn{font-size:1.8rem;font-weight:600;line-height:1.2}.sc{font-size:1rem;color:#888;display:flex;align-items:center;gap:.4rem}
-.ei{width:1rem;height:1rem;border-radius:2px;object-fit:contain}.ps{margin-top:.5rem}
-.cp{display:flex;align-items:baseline;gap:.5rem}.pv{font-size:4rem;font-weight:700;line-height:1;font-feature-settings:"tnum" on,"lnum" on}
-.pc{font-size:1.4rem;color:#888}.ci{display:flex;align-items:center;gap:.6rem;margin-top:.3rem;font-size:1.3rem;font-feature-settings:"tnum" on,"lnum" on}
-.cv,.cpct{color:${col};font-weight:600}.cper{color:#666;white-space:nowrap}
-.cc{flex:1;display:flex;position:relative;margin-top:1rem}.ca{flex:1;position:relative}
-.cs{width:100%;height:100%}.ya{width:7rem;display:flex;flex-direction:column;justify-content:space-between;padding:0 1rem}
-.yt{font-size:1.1rem;color:#666;text-align:right}.xa{display:flex;justify-content:space-between;padding:.75rem 0;margin-right:7rem}
-.xt{font-size:1.1rem;color:#666}
-.pl{position:absolute;left:0;right:0;height:2px;background:repeating-linear-gradient(to right,rgba(255,255,255,.3) 0,rgba(255,255,255,.3) 10px,transparent 10px,transparent 20px);top:${priceY}%}
-.ed{position:absolute;right:0;width:1rem;height:1rem;background:${col};border-radius:50%;transform:translate(50%,-50%);top:${lastY}%;box-shadow:0 0 .75rem ${col}}
-.tv{position:absolute;bottom:.5rem;left:.5rem;opacity:.4;display:flex;align-items:center;gap:.5rem;font-size:.9rem;color:#888}
-</style></head><body><div class="c"><div class="h"><div class="sr"><div class="l">${logo ? `<img src="${logo}" onerror="this.parentElement.innerHTML='$'"/>` : "$"}</div><div class="si"><div class="sn">${d.symbolInfo.description || d.symbolInfo.name}</div><div class="sc">${exUrls.length ? `<img class="ei" src="${exUrls[0]}" data-fallbacks='${JSON.stringify(exUrls.slice(1))}' onerror="var f=JSON.parse(this.dataset.fallbacks||'[]');if(f.length){this.dataset.fallbacks=JSON.stringify(f.slice(1));this.src=f[0]}else{this.style.display='none'}"/>` : ""}${d.symbol}</div></div></div><div class="ps"><div class="cp"><span class="pv">${num(d.currentPrice, pDec)}</span><span class="pc">${d.symbolInfo.currency || "USD"}</span></div><div class="ci"><span class="cv">${sign}${num(d.change, cDec)}</span><span class="cpct">${sign}${num(d.changePercent, 2)}%</span><span class="cper"> ${sess}</span></div></div></div><div class="cc"><div class="ca"><svg class="cs" viewBox="0 0 ${cW} ${cH}" preserveAspectRatio="none"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${fill}"/><stop offset="100%" stop-color="rgba(0,0,0,0)"/></linearGradient></defs><path d="${area}" fill="url(#g)"/><path d="${line}" fill="none" stroke="${col}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="pl"></div><div class="ed"></div><div class="tv"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 35 28" width="70" height="56"><path fill="#888" d="M14 6H2v6h6v9h6V6Zm12 15h-7l6-15h7l-6 15Zm-7-9a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/></svg><p>Data as of<br>${fmt(new Date())} ET</p></div></div><div class="ya">${yTicks.map(t => `<div class="yt">${num(t.p, t.d)}</div>`).join("")}</div></div><div class="xa">${xTicks.map(t => `<div class="xt">${t}</div>`).join("")}</div></div></body></html>`;
+  const exIconX = PX + 100, exY = PY + 82;
+  const symX = exIcon ? exIconX + 28 : exIconX;
+  const exSvg = exIcon ? `<image href="${exIcon}" x="${exIconX}" y="${exY - 17}" width="20" height="20" preserveAspectRatio="xMidYMid meet"/>` : "";
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="Inter, sans-serif">
+<defs>
+<linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${col}" stop-opacity="0.3"/><stop offset="100%" stop-color="#000" stop-opacity="0"/></linearGradient>
+<filter id="gl"><feGaussianBlur stdDeviation="7.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+${logo ? `<clipPath id="lc"><circle cx="${PX + 40}" cy="${PY + 40}" r="40"/></clipPath>` : ""}
+</defs>
+<rect width="${W}" height="${H}" fill="#000"/>
+${logo
+    ? `<image href="${logo}" x="${PX}" y="${PY}" width="80" height="80" clip-path="url(#lc)" preserveAspectRatio="xMidYMid slice"/>`
+    : `<circle cx="${PX + 40}" cy="${PY + 40}" r="40" fill="${col}"/><text x="${PX + 40}" y="${PY + 55}" text-anchor="middle" fill="#fff" font-size="40" font-weight="700">$</text>`}
+<text x="${PX + 100}" y="${PY + 45}" fill="#fff" font-size="36" font-weight="600">${esc(d.symbolInfo.description || d.symbolInfo.name)}</text>
+${exSvg}<text x="${symX}" y="${exY}" fill="#888" font-size="20">${esc(d.symbol)}</text>
+<text x="${PX}" y="${PY + 170}" fill="#fff" font-size="80" font-weight="700">${num(d.currentPrice, pD)}<tspan font-size="28" fill="#888" dx="10">${d.symbolInfo.currency || "USD"}</tspan></text>
+<text x="${PX}" y="${PY + 215}" font-size="26"><tspan fill="${col}" font-weight="600">${sgn}${num(d.change, cD)}</tspan><tspan fill="${col}" font-weight="600" dx="12">${sgn}${num(d.changePercent, 2)}%</tspan><tspan fill="#666" dx="12">${d.sessionInfo?.label || "24 hours"}</tspan></text>
+<g transform="translate(${PX},${cY})">
+<path d="${area}" fill="url(#g)"/><path d="${line}" fill="none" stroke="${col}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+<line x1="0" y1="${plY}" x2="${cW}" y2="${plY}" stroke="#fff" stroke-opacity="0.3" stroke-width="2" stroke-dasharray="10 10"/>
+<circle cx="${cW}" cy="${lastY}" r="10" fill="${col}" filter="url(#gl)"/>
+</g>
+${yT.map((t, i) => `<text x="${PX + cW + 20}" y="${cY + i * cH / 5 + 7}" fill="#666" font-size="22">${num(t.p, t.d)}</text>`).join("\n")}
+${xT.length > 1 ? xT.map((t, i) => `<text x="${PX + i * cW / (xT.length - 1)}" y="${cY + cH + 35}" fill="#666" font-size="22" text-anchor="middle">${t}</text>`).join("\n") : ""}
+<g transform="translate(${PX + 10},${cY + cH - 70})" opacity="0.4">
+<path fill="#888" d="M14 6H2v6h6v9h6V6Zm12 15h-7l6-15h7l-6 15Zm-7-9a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" transform="scale(2)"/>
+<text x="80" y="20" fill="#888" font-size="18">Data as of</text><text x="80" y="42" fill="#888" font-size="18">${fmt(new Date())} ET</text>
+</g>
+</svg>`;
 }
