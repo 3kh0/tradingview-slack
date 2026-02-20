@@ -70,9 +70,20 @@ export function session(sessionStr: string): SessionInfo {
   return { session: sessionStr, hours, label, type };
 }
 
-export function bars(sessionStr: string, intervalMinutes: number): number {
-  const session = session(sessionStr);
-  return Math.ceil(session.hours * 60 / intervalMinutes * 1.1);
+export function barCount(sessionStr: string, intervalMinutes: number): number {
+  const s = session(sessionStr);
+  return Math.ceil(s.hours * 60 / intervalMinutes * 1.1);
+}
+
+export function getETHour(timestamp: number): number {
+  const str = new Date(timestamp).toLocaleTimeString("en-US", {
+    timeZone: "America/New_York",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const [h, m] = str.split(":").map(Number);
+  return h + m / 60;
 }
 
 function determineMarketPhase(sessionStr: string, currentSession: string, symbolType: string): { hours: number; label: string; marketPhase: "regular" | "extended" | "crypto" } {
@@ -272,11 +283,14 @@ export async function pull(sym: string, interval = "5", count?: number): Promise
             };
           }
 
-          if (finalSessionInfo?.marketPhase === "regular" && info?.type === "stock") {
+          const isEquityLike = info?.type === "stock" || info?.type === "index" || info?.type === "fund";
+          if (finalSessionInfo?.marketPhase === "regular" && isEquityLike) {
+            const lastBarDate = new Date(bars.at(-1)!.time).toLocaleDateString("en-US", { timeZone: "America/New_York" });
             const filteredBars = bars.filter(bar => {
-              const barTime = new Date(bar.time);
-              const etHour = barTime.getHours() + barTime.getMinutes() / 60;
-              return etHour >= 9.5 && etHour <= 16;
+              const barDate = new Date(bar.time).toLocaleDateString("en-US", { timeZone: "America/New_York" });
+              if (barDate !== lastBarDate) return false;
+              const etH = getETHour(bar.time);
+              return etH >= 9.5 && etH <= 16;
             });
             if (filteredBars.length >= 10) {
               bars = filteredBars;

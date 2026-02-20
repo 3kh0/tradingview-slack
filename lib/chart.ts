@@ -1,4 +1,5 @@
 import type { ChartData } from "./data";
+import { getETHour } from "./data";
 
 const num = (v: number, d: number) => v.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
 const fmt = (t: Date, tz?: string) => t.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, ...(tz && { timeZone: tz }) });
@@ -50,9 +51,11 @@ export async function buildChart(d: ChartData): Promise<string> {
     const stock = d.symbolInfo.type === "stock" || d.sessionInfo?.marketPhase === "regular" || d.sessionInfo?.marketPhase === "extended";
     const tz = stock ? "America/New_York" : undefined;
     if (stock && d.sessionInfo?.marketPhase === "regular") {
-      const t: string[] = [], s = new Date(d.bars[0].time);
-      s.setHours(9, 30, 0, 0);
-      for (let ms = s.getTime(); ms <= d.bars.at(-1)!.time; ms += 1.8e6) t.push(fmt(new Date(ms), "America/New_York"));
+      const t: string[] = [];
+      const etH = getETHour(d.bars[0].time);
+      const msPastOpen = (etH - 9.5) * 3.6e6;
+      const marketOpenMs = d.bars[0].time - msPastOpen;
+      for (let ms = marketOpenMs; ms <= d.bars.at(-1)!.time; ms += 1.8e6) t.push(fmt(new Date(ms), "America/New_York"));
       return t;
     }
     const start = d.bars[0].time, end = d.bars.at(-1)!.time;
@@ -92,7 +95,7 @@ ${yT.map((t, i) => `<text x="${PX + cW + 20}" y="${cY + i * cH / 5 + 7}" fill="#
 ${xT.length > 1 ? xT.map((t, i) => `<text x="${PX + i * cW / (xT.length - 1)}" y="${cY + cH + 35}" fill="#666" font-size="22" text-anchor="middle">${t}</text>`).join("\n") : ""}
 <g transform="translate(${PX + 10},${cY + cH - 70})" opacity="0.4">
 <path fill="#888" d="M14 6H2v6h6v9h6V6Zm12 15h-7l6-15h7l-6 15Zm-7-9a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" transform="scale(2)"/>
-<text x="80" y="20" fill="#888" font-size="18">Data as of</text><text x="80" y="42" fill="#888" font-size="18">${fmt(new Date())} ET</text>
+<text x="80" y="20" fill="#888" font-size="18">Data as of</text><text x="80" y="42" fill="#888" font-size="18">${fmt(new Date(), "America/New_York")} ET</text>
 </g>
 </svg>`;
 }
