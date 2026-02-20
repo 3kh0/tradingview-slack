@@ -283,7 +283,7 @@ export async function pull(sym: string, interval = "5", count?: number): Promise
             }
           }
 
-          if (chg === 0 && bars.length > 1) { chg = bars.at(-1)!.close - bars[0].close; chgPct = (chg / bars[0].close) * 100; }
+          if (bars.length > 1) { chg = bars.at(-1)!.close - bars[0].open; chgPct = (chg / bars[0].open) * 100; }
 
           resolve({
             symbol: sym,
