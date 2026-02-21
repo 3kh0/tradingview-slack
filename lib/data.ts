@@ -39,12 +39,9 @@ interface SessionWindow {
   durationHours: number;
 }
 
-function parseWindow(sessionStr: string): SessionWindow | null {
-  const match = sessionStr.match(/(\d{4})-(\d{4})/);
-  if (!match) return null;
-
-  const start = parseInt(match[1]);
-  const end = parseInt(match[2]);
+function parseWindowPair(startHHMM: string, endHHMM: string): SessionWindow {
+  const start = Number(startHHMM);
+  const end = Number(endHHMM);
 
   const startHour = Math.floor(start / 100) + (start % 100) / 60;
   const endHour = Math.floor(end / 100) + (end % 100) / 60;
@@ -54,6 +51,24 @@ function parseWindow(sessionStr: string): SessionWindow | null {
   if (wraps) durationHours += 24;
 
   return { startHour, endHour, wraps, durationHours };
+}
+
+function parseWindows(sessionStr: string): SessionWindow[] {
+  const windows: SessionWindow[] = [];
+  const regex = /(\d{4})-(\d{4})/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(sessionStr)) !== null) {
+    windows.push(parseWindowPair(match[1], match[2]));
+  }
+
+  return windows;
+}
+
+function parseWindow(sessionStr: string): SessionWindow | null {
+  const windows = parseWindows(sessionStr);
+  if (!windows.length) return null;
+  return windows[0];
 }
 
 function hourInSessionWindow(hour: number, w: SessionWindow): boolean {
@@ -69,10 +84,10 @@ export function session(sessionStr: string): SessionInfo {
     return { session: sessionStr, hours: 24, label: "24 hours", type: "crypto" };
   }
 
-  const range = parseWindow(sessionStr);
-  if (!range) return { session: sessionStr, hours: 24, label: "24 hours", type: "unknown" };
+  const windows = parseWindows(sessionStr);
+  if (!windows.length) return { session: sessionStr, hours: 24, label: "24 hours", type: "unknown" };
 
-  const hours = range.durationHours;
+  const hours = windows.reduce((sum, w) => sum + w.durationHours, 0);
 
   let type: string;
   let label: string;
@@ -98,6 +113,11 @@ export function barCount(sessionStr: string, intervalMinutes: number): number {
   const s = session(sessionStr);
   const interval = Math.max(1, intervalMinutes || 1);
   return Math.max(10, Math.ceil(s.hours * 60 / interval * 1.1));
+}
+
+function barCountFromHours(hours: number, intervalMinutes: number): number {
+  const interval = Math.max(1, intervalMinutes || 1);
+  return Math.max(10, Math.ceil(hours * 60 / interval * 1.1));
 }
 
 export function getHourInTimezone(timestamp: number, timeZone: string): number {
@@ -171,8 +191,11 @@ export function getSession(sym: string, timeoutMs = 8000): Promise<SessionInfo> 
     const cs = genId("cs_"), qs = genId("qs_");
     let sessionData: Partial<SessionInfo> & { timezone?: string; currentSession?: string; symbolType?: string } = {};
     let timeout: NodeJS.Timeout;
+    let settled = false;
 
     const done = () => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timeout);
       ws.close();
 
@@ -194,7 +217,19 @@ export function getSession(sym: string, timeoutMs = 8000): Promise<SessionInfo> 
           timezone: sessionData.timezone,
           symbolType: sessionData.symbolType,
         });
+        return;
       }
+
+      resolve({
+        session: "",
+        hours: 24,
+        label: "24 hours",
+        type: "unknown",
+        currentSession: sessionData.currentSession,
+        marketPhase: sessionData.symbolType === "spot" || sessionData.symbolType === "crypto" ? "crypto" : "extended",
+        timezone: sessionData.timezone,
+        symbolType: sessionData.symbolType,
+      });
     };
 
     timeout = setTimeout(done, timeoutMs);
@@ -236,10 +271,13 @@ export function getSession(sym: string, timeoutMs = 8000): Promise<SessionInfo> 
 export async function pull(sym: string, interval = "5", count?: number): Promise<ChartData> {
   let sessionInfo: SessionInfo | undefined;
   let effectiveCount = count;
+  const intervalMinutes = parseInt(interval) || 5;
 
   if (effectiveCount === undefined || effectiveCount === null) {
     sessionInfo = await getSession(sym);
-    effectiveCount = barCount(sessionInfo.session, parseInt(interval) || 5);
+    effectiveCount = sessionInfo.session
+      ? barCount(sessionInfo.session, intervalMinutes)
+      : barCountFromHours(sessionInfo.hours || 24, intervalMinutes);
   }
 
   return new Promise((resolve, reject) => {
@@ -342,7 +380,7 @@ export async function pull(sym: string, interval = "5", count?: number): Promise
           }
 
           const isEquityLike = info?.type === "stock" || info?.type === "index" || info?.type === "fund";
-          if (finalSessionInfo?.marketPhase === "regular" && isEquityLike) {
+          if (finalSessionInfo?.marketPhase === "regular" && isEquityLike && bars.length) {
             const marketTimezone = info?.timezone || finalSessionInfo.timezone || "America/New_York";
             const range = parseWindow(resolvedRegularSession || finalSession);
             const regularWindow = (range && range.durationHours <= 8)
