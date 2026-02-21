@@ -5,7 +5,7 @@ import WebSocket from "ws";
 // there is alot of crap, so just filter to only websocket frames and look for ones with "~m~" in them.
 
 export interface Bar { time: number; open: number; high: number; low: number; close: number; volume: number }
-export interface SymbolInfo { symbol: string; name: string; description: string; exchange: string; type: string; currency: string; logoid?: string; providerId?: string }
+export interface SymbolInfo { symbol: string; name: string; description: string; exchange: string; type: string; currency: string; logoid?: string; providerId?: string; timezone?: string }
 export interface SessionInfo {
   session: string;
   hours: number;
@@ -13,6 +13,8 @@ export interface SessionInfo {
   type: string;
   currentSession?: string; // "market", "pre_market", "post_market", "closed"
   marketPhase?: "regular" | "extended" | "crypto";
+  timezone?: string;
+  symbolType?: string;
 }
 export interface ChartData { symbol: string; symbolInfo: SymbolInfo; bars: Bar[]; currentPrice: number; change: number; changePercent: number; sessionInfo?: SessionInfo }
 
@@ -30,6 +32,35 @@ function parse(d: string): any[] {
   return r;
 }
 
+interface SessionWindow {
+  startHour: number;
+  endHour: number;
+  wraps: boolean;
+  durationHours: number;
+}
+
+function parseWindow(sessionStr: string): SessionWindow | null {
+  const match = sessionStr.match(/(\d{4})-(\d{4})/);
+  if (!match) return null;
+
+  const start = parseInt(match[1]);
+  const end = parseInt(match[2]);
+
+  const startHour = Math.floor(start / 100) + (start % 100) / 60;
+  const endHour = Math.floor(end / 100) + (end % 100) / 60;
+
+  let durationHours = endHour - startHour;
+  const wraps = durationHours <= 0;
+  if (wraps) durationHours += 24;
+
+  return { startHour, endHour, wraps, durationHours };
+}
+
+function hourInSessionWindow(hour: number, w: SessionWindow): boolean {
+  if (!w.wraps) return hour >= w.startHour && hour <= w.endHour;
+  return hour >= w.startHour || hour <= w.endHour;
+}
+
 // tv session string ("24x7", "0400-2000", "1800-1700")
 export function session(sessionStr: string): SessionInfo {
   if (!sessionStr) return { session: "", hours: 24, label: "24 hours", type: "unknown" };
@@ -38,17 +69,10 @@ export function session(sessionStr: string): SessionInfo {
     return { session: sessionStr, hours: 24, label: "24 hours", type: "crypto" };
   }
 
-  const match = sessionStr.match(/(\d{4})-(\d{4})/);
-  if (!match) return { session: sessionStr, hours: 24, label: "24 hours", type: "unknown" };
+  const range = parseWindow(sessionStr);
+  if (!range) return { session: sessionStr, hours: 24, label: "24 hours", type: "unknown" };
 
-  const start = parseInt(match[1]);
-  const end = parseInt(match[2]);
-
-  const startH = Math.floor(start / 100) + (start % 100) / 60;
-  const endH = Math.floor(end / 100) + (end % 100) / 60;
-
-  let hours = endH - startH;
-  if (hours <= 0) hours += 24; // wrap arounds
+  const hours = range.durationHours;
 
   let type: string;
   let label: string;
@@ -72,18 +96,25 @@ export function session(sessionStr: string): SessionInfo {
 
 export function barCount(sessionStr: string, intervalMinutes: number): number {
   const s = session(sessionStr);
-  return Math.ceil(s.hours * 60 / intervalMinutes * 1.1);
+  const interval = Math.max(1, intervalMinutes || 1);
+  return Math.max(10, Math.ceil(s.hours * 60 / interval * 1.1));
+}
+
+export function getHourInTimezone(timestamp: number, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(timestamp));
+
+  const hour = Number(parts.find(p => p.type === "hour")?.value || 0);
+  const minute = Number(parts.find(p => p.type === "minute")?.value || 0);
+  return hour + minute / 60;
 }
 
 export function getETHour(timestamp: number): number {
-  const str = new Date(timestamp).toLocaleTimeString("en-US", {
-    timeZone: "America/New_York",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-  const [h, m] = str.split(":").map(Number);
-  return h + m / 60;
+  return getHourInTimezone(timestamp, "America/New_York");
 }
 
 function determineMarketPhase(sessionStr: string, currentSession: string, symbolType: string): { hours: number; label: string; marketPhase: "regular" | "extended" | "crypto" } {
@@ -91,29 +122,24 @@ function determineMarketPhase(sessionStr: string, currentSession: string, symbol
     return { hours: 24, label: "24 hours", marketPhase: "crypto" };
   }
 
-  const match = sessionStr.match(/(\d{4})-(\d{4})/);
-  if (!match) {
+  const range = parseWindow(sessionStr);
+  if (!range) {
     return { hours: 6.5, label: "trading session", marketPhase: "regular" };
   }
 
-  const start = parseInt(match[1]);
-  const end = parseInt(match[2]);
-  const startH = Math.floor(start / 100) + (start % 100) / 60;
-  const endH = Math.floor(end / 100) + (end % 100) / 60;
+  const totalHours = range.durationHours;
+  const equityLike = symbolType === "stock" || symbolType === "index" || symbolType === "fund";
 
-  let totalHours = endH - startH;
-  if (totalHours <= 0) totalHours += 24;
-
-  if (totalHours >= 23) {
-    return { hours: totalHours, label: "past day", marketPhase: "crypto" };
+  if (totalHours >= 23 && !equityLike) {
+    return { hours: totalHours, label: "past day", marketPhase: "extended" };
   }
 
   switch (currentSession) {
     case "market":
       return {
-        hours: 6.5, // 9:30-16:00
-        label: "today",
-        marketPhase: "regular"
+        hours: equityLike ? 6.5 : totalHours,
+        label: equityLike ? "today" : session(sessionStr).label,
+        marketPhase: equityLike ? "regular" : totalHours >= 12 ? "extended" : "regular",
       };
 
     case "post_market":
@@ -125,16 +151,16 @@ function determineMarketPhase(sessionStr: string, currentSession: string, symbol
 
     case "pre_market":
       return {
-        hours: totalHours > 6.5 ? totalHours : 6.5,
+        hours: Math.max(totalHours, 6.5),
         label: "pre market",
-        marketPhase: "extended"
+        marketPhase: "extended",
       };
 
     default:
       return {
-        hours: 6.5,
-        label: "today",
-        marketPhase: "regular"
+        hours: equityLike ? 6.5 : totalHours,
+        label: equityLike ? "today" : session(sessionStr).label,
+        marketPhase: equityLike ? "regular" : totalHours >= 12 ? "extended" : "regular",
       };
   }
 }
@@ -165,6 +191,8 @@ export function getSession(sym: string, timeoutMs = 8000): Promise<SessionInfo> 
           type: base.type,
           currentSession: sessionData.currentSession,
           marketPhase: phase.marketPhase,
+          timezone: sessionData.timezone,
+          symbolType: sessionData.symbolType,
         });
       }
     };
@@ -211,7 +239,7 @@ export async function pull(sym: string, interval = "5", count?: number): Promise
 
   if (effectiveCount === undefined || effectiveCount === null) {
     sessionInfo = await getSession(sym);
-    effectiveCount = Math.ceil(sessionInfo.hours * 60 / (parseInt(interval) || 5) * 1.1);
+    effectiveCount = barCount(sessionInfo.session, parseInt(interval) || 5);
   }
 
   return new Promise((resolve, reject) => {
@@ -219,6 +247,8 @@ export async function pull(sym: string, interval = "5", count?: number): Promise
     const cs = genId("cs_"), qs = genId("qs_");
     let info: SymbolInfo | null = null, bars: Bar[] = [], price = 0, chg = 0, chgPct = 0, done = false;
     let resolvedSession: string | undefined;
+    let resolvedTimezone: string | undefined;
+    let resolvedRegularSession: string | undefined;
 
     const t = setTimeout(() => { ws.close(); reject(new Error("Timeout")); }, 15000);
 
@@ -226,7 +256,7 @@ export async function pull(sym: string, interval = "5", count?: number): Promise
       ws.send(fmt("set_auth_token", ["unauthorized_user_token"]));
       ws.send(fmt("chart_create_session", [cs, ""]));
       ws.send(fmt("quote_create_session", [qs]));
-      ws.send(fmt("quote_set_fields", [qs, "ch", "chp", "current_session", "description", "local_description", "exchange", "format", "fractional", "is_tradable", "language", "logoid", "logo", "lp", "lp_time", "minmov", "minmove2", "original_name", "pricescale", "pro_name", "short_name", "type", "update_mode", "volume", "currency_code", "rchp", "rtc"]));
+      ws.send(fmt("quote_set_fields", [qs, "ch", "chp", "current_session", "description", "local_description", "exchange", "format", "fractional", "is_tradable", "language", "logoid", "logo", "lp", "lp_time", "minmov", "minmove2", "original_name", "pricescale", "pro_name", "provider_id", "short_name", "timezone", "type", "update_mode", "volume", "currency_code", "rchp", "rtc"]));
       ws.send(fmt("quote_add_symbols", [qs, sym]));
       ws.send(fmt("resolve_symbol", [cs, "sds_sym_1", `={"symbol":"${sym}","adjustment":"splits","session":"extended"}`]));
       ws.send(fmt("create_series", [cs, "sds_1", "s1", "sds_sym_1", interval, effectiveCount, ""]));
@@ -238,8 +268,29 @@ export async function pull(sym: string, interval = "5", count?: number): Promise
       for (const msg of parse(d.toString())) {
         if (!msg.m) continue;
 
-        if (msg.m === "symbol_resolved" && msg.p?.[2]?.session) {
-          resolvedSession = msg.p[2].session;
+        if (msg.m === "symbol_resolved" && msg.p?.[2]) {
+          const resolved = msg.p[2];
+          if (resolved.session) resolvedSession = resolved.session;
+          if (resolved.timezone) resolvedTimezone = resolved.timezone;
+
+          if (Array.isArray(resolved.subsessions)) {
+            const regular = resolved.subsessions.find((s: any) => s?.id === "regular" && typeof s?.session === "string");
+            if (regular?.session) resolvedRegularSession = regular.session;
+          }
+
+          if (!info) {
+            info = {
+              symbol: sym,
+              name: resolved.name || resolved.short_description || sym.split(":")[1],
+              description: resolved.description || resolved.local_description || "",
+              exchange: resolved.exchange || resolved.exchange_listed_name || sym.split(":")[0],
+              type: resolved.type || "unknown",
+              currency: resolved.currency_code || "USD",
+              logoid: resolved.logoid,
+              providerId: resolved.provider_id,
+              timezone: resolved.timezone,
+            };
+          }
         }
 
         if (msg.m === "qsd" && msg.p?.[1]?.v) {
@@ -248,15 +299,20 @@ export async function pull(sym: string, interval = "5", count?: number): Promise
           if (v.ch) chg = v.ch;
           if (v.chp) chgPct = v.chp;
           if (v.session && !resolvedSession) resolvedSession = v.session;
+          if (v.timezone && !resolvedTimezone) resolvedTimezone = v.timezone;
           if (v.current_session && !currentSessionFromData) currentSessionFromData = v.current_session;
-          if (!info && v.short_name) {
-            info = {
-              symbol: sym, name: v.short_name || v.description || sym.split(":")[1],
-              description: v.description || "", exchange: v.exchange || sym.split(":")[0],
-              type: v.type || "index", currency: v.currency_code || "USD",
-              logoid: v.logoid || v.logo?.logoid, providerId: v.provider_id,
-            };
+          if (!info) {
+            info = { symbol: sym, name: sym.split(":")[1], description: "", exchange: sym.split(":")[0], type: "unknown", currency: "USD" };
           }
+
+          info.name = v.short_name || v.description || info.name;
+          info.description = v.description || info.description;
+          info.exchange = v.exchange || info.exchange;
+          info.type = v.type || info.type;
+          info.currency = v.currency_code || info.currency;
+          info.logoid = v.logoid || v.logo?.logoid || info.logoid;
+          info.providerId = v.provider_id || info.providerId;
+          info.timezone = v.timezone || info.timezone || resolvedTimezone;
         }
         if (msg.m === "timescale_update" && msg.p?.[1]?.sds_1?.s) {
           for (const b of msg.p[1].sds_1.s) if (b.v?.length >= 5) bars.push({ time: b.v[0] * 1000, open: b.v[1], high: b.v[2], low: b.v[3], close: b.v[4], volume: b.v[5] || 0 });
@@ -280,17 +336,25 @@ export async function pull(sym: string, interval = "5", count?: number): Promise
               type: base.type,
               currentSession: currentSess,
               marketPhase: phase.marketPhase,
+              timezone: resolvedTimezone,
+              symbolType: info?.type,
             };
           }
 
           const isEquityLike = info?.type === "stock" || info?.type === "index" || info?.type === "fund";
           if (finalSessionInfo?.marketPhase === "regular" && isEquityLike) {
-            const lastBarDate = new Date(bars.at(-1)!.time).toLocaleDateString("en-US", { timeZone: "America/New_York" });
+            const marketTimezone = info?.timezone || finalSessionInfo.timezone || "America/New_York";
+            const range = parseWindow(resolvedRegularSession || finalSession);
+            const regularWindow = (range && range.durationHours <= 8)
+              ? range
+              : { startHour: 9.5, endHour: 16, wraps: false, durationHours: 6.5 };
+
+            const lastBarDate = new Date(bars.at(-1)!.time).toLocaleDateString("en-US", { timeZone: marketTimezone });
             const filteredBars = bars.filter(bar => {
-              const barDate = new Date(bar.time).toLocaleDateString("en-US", { timeZone: "America/New_York" });
+              const barDate = new Date(bar.time).toLocaleDateString("en-US", { timeZone: marketTimezone });
               if (barDate !== lastBarDate) return false;
-              const etH = getETHour(bar.time);
-              return etH >= 9.5 && etH <= 16;
+              const marketHour = getHourInTimezone(bar.time, marketTimezone);
+              return hourInSessionWindow(marketHour, regularWindow);
             });
             if (filteredBars.length >= 10) {
               bars = filteredBars;
